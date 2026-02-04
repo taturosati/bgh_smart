@@ -14,6 +14,7 @@ Integración personalizada para controlar aires acondicionados BGH Smart vía UD
 - Seteo de temperatura objetivo
 - Lectura de temperatura ambiente
 - Lectura de temperatura objetivo (setpoint)
+- Swing horizontal/vertical, Turbo
 
 ✅ Comunicación 100% local vía UDP (no requiere cloud)
 

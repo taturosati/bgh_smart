@@ -8,6 +8,10 @@ from homeassistant.components.climate import (
     ClimateEntity,
     ClimateEntityFeature,
     HVACMode,
+    SWING_BOTH,
+    SWING_HORIZONTAL,
+    SWING_OFF,
+    SWING_VERTICAL,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_TEMPERATURE, CONF_NAME, UnitOfTemperature
@@ -47,7 +51,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up the BGH climate platform."""
     coordinator: BGHDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
-    
+
     async_add_entities(
         [BGHClimate(coordinator, entry)],
         update_before_add=True,
@@ -66,6 +70,7 @@ class BGHClimate(CoordinatorEntity[BGHDataUpdateCoordinator], ClimateEntity):
     _attr_supported_features = (
         ClimateEntityFeature.TARGET_TEMPERATURE
         | ClimateEntityFeature.FAN_MODE
+        | ClimateEntityFeature.SWING_MODE
     )
     _attr_hvac_modes = [
         HVACMode.OFF,
@@ -76,6 +81,7 @@ class BGHClimate(CoordinatorEntity[BGHDataUpdateCoordinator], ClimateEntity):
         HVACMode.AUTO,
     ]
     _attr_fan_modes = list(FAN_MODES.values())
+    _attr_swing_modes = [SWING_OFF, SWING_HORIZONTAL, SWING_VERTICAL, SWING_BOTH]
 
     def __init__(
         self,
@@ -123,13 +129,36 @@ class BGHClimate(CoordinatorEntity[BGHDataUpdateCoordinator], ClimateEntity):
             return FAN_MODES.get(fan_speed, "low")
         return None
 
+    @property
+    def swing_mode(self) -> str | None:
+        """Return the swing setting."""
+        if self.coordinator.data:
+            swing_h = self.coordinator.data.get("swing_horizontal", False)
+            swing_v = self.coordinator.data.get("swing_vertical", False)
+            if swing_h and swing_v:
+                return SWING_BOTH
+            elif swing_h:
+                return SWING_HORIZONTAL
+            elif swing_v:
+                return SWING_VERTICAL
+        return SWING_OFF
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return extra state attributes."""
+        if self.coordinator.data:
+            return {
+                "turbo": self.coordinator.data.get("turbo", False),
+            }
+        return None
+
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set new target temperature."""
         temperature = kwargs.get(ATTR_TEMPERATURE)
         if temperature is None:
             _LOGGER.error("No temperature provided")
             return
-        
+
         await self.coordinator.async_set_temperature(temperature)
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
@@ -164,6 +193,22 @@ class BGHClimate(CoordinatorEntity[BGHDataUpdateCoordinator], ClimateEntity):
             current_mode = self.coordinator.data.get("mode_raw", 0)
 
         await self.coordinator.async_set_mode(current_mode, fan_value)
+
+    async def async_set_swing_mode(self, swing_mode: str) -> None:
+        """Set new swing mode."""
+        current_h = self.coordinator.data.get("swing_horizontal", False) if self.coordinator.data else False
+        current_v = self.coordinator.data.get("swing_vertical", False) if self.coordinator.data else False
+
+        target_h = swing_mode in (SWING_HORIZONTAL, SWING_BOTH)
+        target_v = swing_mode in (SWING_VERTICAL, SWING_BOTH)
+
+        # Toggle horizontal if needed
+        if target_h != current_h:
+            await self.coordinator.async_toggle_swing_horizontal()
+
+        # Toggle vertical if needed
+        if target_v != current_v:
+            await self.coordinator.async_toggle_swing_vertical()
 
     async def async_turn_on(self) -> None:
         """Turn the entity on."""

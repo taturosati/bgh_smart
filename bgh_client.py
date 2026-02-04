@@ -8,10 +8,15 @@ import struct
 from typing import Any, Callable
 
 from .const import (
+    CMD_HVAC,
+    HVAC_SWING_HORIZONTAL,
+    HVAC_SWING_VERTICAL,
+    HVAC_TURBO,
     MODES,
+    MODES_ALLOWING_SWING,
+    MODES_ALLOWING_TURBO,
     UDP_RECV_PORT,
     UDP_SEND_PORT,
-    UDP_SOURCE_PORT,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -36,7 +41,7 @@ class BGHClient:
         """Connect to the AC unit and start listening for broadcasts."""
         try:
             _LOGGER.info("=== BGH Client connecting to %s ===", self.host)
-            
+
             # Create sockets synchronously to avoid async issues
             try:
                 self._recv_sock = self._create_recv_socket()
@@ -44,7 +49,7 @@ class BGHClient:
             except Exception as e:
                 _LOGGER.error("Failed to create receive socket: %s", e)
                 return False
-            
+
             try:
                 self._send_sock = self._create_send_socket()
                 _LOGGER.info("✓ Send socket created")
@@ -53,19 +58,19 @@ class BGHClient:
                 if self._recv_sock:
                     self._recv_sock.close()
                 return False
-            
+
             # Start listener task
             _LOGGER.info("Starting broadcast listener task...")
             self._listener_task = asyncio.create_task(self._broadcast_listener())
             _LOGGER.info("✓ Broadcast listener task started")
-            
+
             _LOGGER.info("BGH Client connected for %s", self.host)
-            
+
             # Send initial status query to trigger a broadcast
             _LOGGER.info("Sending initial status request...")
             await self.async_request_status()
             _LOGGER.info("✓ Connection complete")
-            
+
             return True
         except Exception as err:
             _LOGGER.error("Failed to connect to %s: %s", self.host, err)
@@ -87,7 +92,7 @@ class BGHClient:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        
+
         sock.bind(("", UDP_RECV_PORT))
         sock.setblocking(False)
         _LOGGER.info("Broadcast receive socket bound to port %d", UDP_RECV_PORT)
@@ -97,67 +102,67 @@ class BGHClient:
         """Listen for UDP broadcasts from the AC unit."""
         _LOGGER.info("🎧 Broadcast listener started for %s", self.host)
         _LOGGER.info("   Listening on port %d for broadcasts from %s", UDP_RECV_PORT, self.host)
-        
+
         broadcast_timeout = 0
-        
+
         while True:
             try:
                 if not self._recv_sock:
                     _LOGGER.warning("Receive socket is None, stopping listener")
                     break
-                    
+
                 loop = asyncio.get_event_loop()
-                
+
                 # Try to receive with timeout
                 try:
                     data, addr = await asyncio.wait_for(
                         loop.sock_recvfrom(self._recv_sock, 1024),
                         timeout=15.0  # 15 second timeout
                     )
-                    
+
                     _LOGGER.debug("📡 Received UDP packet from %s: %d bytes", addr, len(data))
-                    
+
                     # Reset timeout counter on successful receive
                     broadcast_timeout = 0
-                    
+
                     # Only process broadcasts from our AC unit
                     if addr[0] == self.host:
                         _LOGGER.info("✅ Broadcast from AC %s: %d bytes", addr, len(data))
-                        
+
                         # Extract device ID from first broadcast (bytes 1-6, after initial 0x00)
                         if not self._device_id and len(data) >= 7:
                             self._device_id = data[1:7].hex()
                             _LOGGER.warning(">>> DEVICE ID EXTRACTED <<<")
                             _LOGGER.warning("    Raw broadcast: %s", data.hex())
                             _LOGGER.warning("    Device ID: %s", self._device_id)
-                        
+
                         status = self._parse_status(data)
-                        
+
                         if status:
                             self._last_status = status
-                            _LOGGER.info("   Parsed: mode=%s, fan=%s, temp=%.1f°C", 
-                                       status.get('mode'), status.get('fan_speed'), 
+                            _LOGGER.info("   Parsed: mode=%s, fan=%s, temp=%.1f°C",
+                                       status.get('mode'), status.get('fan_speed'),
                                        status.get('current_temperature', 0))
                             if self._status_callback:
                                 self._status_callback(status)
                     else:
                         _LOGGER.debug("   Ignoring broadcast from %s (not our AC)", addr[0])
-                        
+
                 except asyncio.TimeoutError:
                     # No broadcast received in 15 seconds
                     broadcast_timeout += 1
-                    
+
                     if broadcast_timeout == 1:
                         _LOGGER.warning("⚠️  No broadcasts received from %s (network issue?)", self.host)
                         _LOGGER.warning("   Switching to polling mode...")
-                    
+
                     # Request status when no broadcasts arrive
                     _LOGGER.debug("Polling: Requesting status from %s", self.host)
                     await self.async_request_status()
-                    
+
                     # Wait a bit for the AC to respond with broadcast
                     await asyncio.sleep(1)
-                            
+
             except asyncio.CancelledError:
                 _LOGGER.info("Broadcast listener stopped for %s", self.host)
                 break
@@ -184,7 +189,7 @@ class BGHClient:
         if not self._last_status:
             await self.async_request_status()
             await asyncio.sleep(1)
-        
+
         return self._last_status if self._last_status else None
 
     async def async_set_mode(
@@ -201,7 +206,7 @@ class BGHClient:
                 if not self._device_id:
                     _LOGGER.error("Cannot send command without Device ID")
                     return False
-            
+
             # Update current state
             self._current_mode = mode
             if fan_speed is not None:
@@ -218,13 +223,13 @@ class BGHClient:
             _LOGGER.info("Sending mode command: mode=%d, fan=%d, device_id=%s",
                         self._current_mode, self._current_fan, self._device_id)
             await self._send_command(bytes(command))
-            
+
             # Wait a bit for AC to process
             await asyncio.sleep(0.3)
-            
+
             # Request status update (will trigger broadcast)
             await self.async_request_status()
-            
+
             return True
         except Exception as err:
             _LOGGER.error("Failed to set mode on %s: %s", self.host, err)
@@ -252,7 +257,7 @@ class BGHClient:
             command = bytearray(bytes.fromhex(cmd_base))
             command[17] = self._current_mode
             command[18] = self._current_fan
-            
+
             # Temperature as 16-bit little-endian, multiplied by 100
             temp_raw = int(temperature * 100)
             command[20] = temp_raw & 0xFF         # Low byte
@@ -262,13 +267,13 @@ class BGHClient:
                         temperature, self._current_mode, self._current_fan, self._device_id)
             _LOGGER.debug("Temperature command hex: %s", bytes(command).hex())
             await self._send_command(bytes(command))
-            
+
             # Wait a bit for AC to process
             await asyncio.sleep(0.3)
-            
+
             # Request status update (will trigger broadcast)
             await self.async_request_status()
-            
+
             return True
         except Exception as err:
             _LOGGER.error("Failed to set temperature on %s: %s", self.host, err)
@@ -279,7 +284,7 @@ class BGHClient:
     async def _send_command(self, command: bytes) -> None:
         """Send UDP command - creates new socket each time like working test."""
         _LOGGER.debug("Sending %d bytes to %s:%d", len(command), self.host, UDP_SEND_PORT)
-        
+
         # Create new socket, send, close - just like the working test script
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -297,14 +302,23 @@ class BGHClient:
         # Extract data according to Node-RED flow
         mode = data[18]
         fan_speed = data[19]
-        
+        hvac_flags = data[20]
+
         # Temperature is in bytes 21-22 (little-endian, divided by 100)
         temp_raw = struct.unpack("<H", data[21:23])[0]
         current_temp = temp_raw / 100.0
-        
+
         # Setpoint is in bytes 23-24
         setpoint_raw = struct.unpack("<H", data[23:25])[0]
         target_temp = setpoint_raw / 100.0
+
+        # Parse HVAC flags (byte 20)
+        # Bit 3 (0x08): Turbo
+        # Bit 4 (0x10): Swing Horizontal
+        # Bit 5 (0x20): Swing Vertical
+        swing_horizontal = (hvac_flags & 0x10) > 0
+        swing_vertical = (hvac_flags & 0x20) > 0
+        turbo = (hvac_flags & 0x08) > 0
 
         status = {
             "mode": MODES.get(mode, "unknown"),
@@ -313,6 +327,9 @@ class BGHClient:
             "current_temperature": current_temp,
             "target_temperature": target_temp,
             "is_on": mode != 0,
+            "swing_horizontal": swing_horizontal,
+            "swing_vertical": swing_vertical,
+            "turbo": turbo,
         }
 
         # Update internal state
@@ -321,6 +338,101 @@ class BGHClient:
 
         _LOGGER.debug("Parsed status from %s: %s", self.host, status)
         return status
+
+    async def _send_hvac_command(self, hvac_command: int) -> bool:
+        """Send an HVAC command (swing/turbo toggle).
+
+        Args:
+            hvac_command: HVAC command byte (0x51=swing_h, 0x61=swing_v, 0x71=turbo)
+
+        Returns:
+            True if command was sent successfully
+        """
+        if not self._device_id:
+            _LOGGER.warning("Device ID not yet extracted, waiting for broadcast...")
+            await asyncio.sleep(2)
+            if not self._device_id:
+                _LOGGER.error("Cannot send HVAC command without Device ID")
+                return False
+
+        # Build HVAC command packet
+        # Header: 00 + SourceMAC(6 zeros) + DestMAC(6 bytes device_id) + SeqNum + SrcEndpoint + DstEndpoint + CmdID
+        # Payload: 1 byte HVAC command
+        header = bytearray(17)
+        header[0] = 0x00  # Protocol version
+        # Bytes 1-6: Source MAC (zeros)
+        # Bytes 7-12: Destination MAC (device ID)
+        device_mac = bytes.fromhex(self._device_id)
+        header[7:13] = device_mac
+        header[13] = 0x00  # Sequence number
+        header[14] = 0x00  # Source endpoint
+        header[15] = 0x01  # Destination endpoint (1 for thermostat)
+        header[16] = CMD_HVAC  # Command ID (98/0x62)
+
+        # Payload: single byte HVAC command
+        packet = bytes(header) + bytes([hvac_command])
+
+        _LOGGER.info("Sending HVAC command 0x%02X to device %s", hvac_command, self._device_id)
+        _LOGGER.debug("HVAC command packet: %s", packet.hex())
+
+        await self._send_command(packet)
+
+        # Wait for AC to process and request status
+        await asyncio.sleep(0.3)
+        await self.async_request_status()
+
+        return True
+
+    async def async_toggle_swing_horizontal(self) -> bool:
+        """Toggle horizontal swing.
+
+        Note: Swing is typically only available in cool, heat, dry, fan, and auto modes.
+
+        Returns:
+            True if command was sent successfully
+        """
+        if self._current_mode not in MODES_ALLOWING_SWING:
+            _LOGGER.warning(
+                "Swing horizontal may not be available in current mode %d (%s)",
+                self._current_mode, MODES.get(self._current_mode, "unknown")
+            )
+
+        _LOGGER.info("Toggling horizontal swing")
+        return await self._send_hvac_command(HVAC_SWING_HORIZONTAL)
+
+    async def async_toggle_swing_vertical(self) -> bool:
+        """Toggle vertical swing.
+
+        Note: Swing is typically only available in cool, heat, dry, fan, and auto modes.
+
+        Returns:
+            True if command was sent successfully
+        """
+        if self._current_mode not in MODES_ALLOWING_SWING:
+            _LOGGER.warning(
+                "Swing vertical may not be available in current mode %d (%s)",
+                self._current_mode, MODES.get(self._current_mode, "unknown")
+            )
+
+        _LOGGER.info("Toggling vertical swing")
+        return await self._send_hvac_command(HVAC_SWING_VERTICAL)
+
+    async def async_toggle_turbo(self) -> bool:
+        """Toggle turbo mode.
+
+        Note: Turbo is typically only available in cool mode.
+
+        Returns:
+            True if command was sent successfully
+        """
+        if self._current_mode not in MODES_ALLOWING_TURBO:
+            _LOGGER.warning(
+                "Turbo may not be available in current mode %d (%s). Turbo typically only works in cool mode.",
+                self._current_mode, MODES.get(self._current_mode, "unknown")
+            )
+
+        _LOGGER.info("Toggling turbo mode")
+        return await self._send_hvac_command(HVAC_TURBO)
 
     async def async_close(self) -> None:
         """Close the connection."""
@@ -331,11 +443,11 @@ class BGHClient:
             except asyncio.CancelledError:
                 pass
             self._listener_task = None
-            
+
         if self._send_sock:
             self._send_sock.close()
             self._send_sock = None
-            
+
         if self._recv_sock:
             self._recv_sock.close()
             self._recv_sock = None

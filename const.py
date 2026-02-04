@@ -54,3 +54,16 @@ FAN_MODES_REVERSE = {v: k for k, v in FAN_MODES.items()}
 # Temperature limits
 MIN_TEMP = 16
 MAX_TEMP = 30
+
+# HVAC Commands (Command ID 98 / 0x62)
+# These are toggle commands sent as single-byte payloads
+CMD_HVAC = 0x62  # 98 decimal
+HVAC_SWING_HORIZONTAL = 0x51  # 81 decimal - toggle horizontal swing
+HVAC_SWING_VERTICAL = 0x61   # 97 decimal - toggle vertical swing
+HVAC_TURBO = 0x71            # 113 decimal - toggle turbo mode
+
+# Modes that allow swing (1=cool, 2=heat, 3=dry, 4=fan, 254=auto)
+MODES_ALLOWING_SWING = {MODE_COOL, MODE_HEAT, MODE_DRY, MODE_FAN, MODE_AUTO}
+
+# Modes that allow turbo (only cool mode)
+MODES_ALLOWING_TURBO = {MODE_COOL}
